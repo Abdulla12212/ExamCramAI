@@ -5,6 +5,8 @@
 
 [build.environment]
   NODE_VERSION = "20"
+  # These are public config names/values (e.g. "gemini"), not credentials.
+  SECRETS_SCAN_OMIT_KEYS = "LLM_PROVIDER,GEMINI_MODEL,EMBEDDING_MODEL,EMBEDDING_PROVIDER,EMBEDDING_DIMENSIONS"
 
 [functions]
   node_bundler = "esbuild"

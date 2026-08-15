@@ -5,7 +5,29 @@ import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import JSZip from 'jszip';
 import { AppError, ERRORS } from './errors.js';
 
-const require = createRequire(import.meta.url);
+function pdfjsRequire() {
+  const bases = [];
+  if (typeof __filename === 'string' && __filename) bases.push(__filename);
+  bases.push(join(process.cwd(), 'package.json'));
+
+  for (const base of bases) {
+    try {
+      const req = createRequire(base);
+      req.resolve('pdfjs-dist/package.json');
+      return req;
+    } catch {
+      // Netlify CJS bundles have no import.meta.url; try the next base.
+    }
+  }
+
+  throw new AppError(
+    'CONFIG',
+    'PDF parser could not load pdfjs-dist. Check the ingest function bundle.',
+    500
+  );
+}
+
+const require = pdfjsRequire();
 const pdfjsRoot = dirname(require.resolve('pdfjs-dist/package.json'));
 pdfjs.GlobalWorkerOptions.workerSrc = pathToFileURL(
   require.resolve('pdfjs-dist/legacy/build/pdf.worker.mjs')
