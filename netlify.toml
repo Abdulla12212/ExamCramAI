@@ -4,13 +4,14 @@
   functions = "netlify/functions"
 
 [build.environment]
-  NODE_VERSION = "20"
+  NODE_VERSION = "22"
   # These are public config names/values (e.g. "gemini"), not credentials.
   SECRETS_SCAN_OMIT_KEYS = "LLM_PROVIDER,GEMINI_MODEL,EMBEDDING_MODEL,EMBEDDING_PROVIDER,EMBEDDING_DIMENSIONS"
 
 [functions]
   node_bundler = "esbuild"
   directory = "netlify/functions"
+  external_node_modules = ["ws"]
 
 [dev]
   command = "npm run dev"
