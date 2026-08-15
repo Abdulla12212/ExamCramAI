@@ -63,7 +63,17 @@ export async function handler(event) {
       : 'course_material';
     const buffer = decodeBase64(body.contentBase64);
 
-    const parsed = await parseDocument(buffer, filename);
+    let parsed;
+    try {
+      parsed = await parseDocument(buffer, filename);
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      throw new AppError(
+        'PARSE',
+        `We couldn't parse that file. ${error.message || 'Please try a PDF or PPTX with selectable text.'}`,
+        422
+      );
+    }
     const supabase = getSupabase();
 
     const { data: document, error: documentError } = await supabase
@@ -90,10 +100,21 @@ export async function handler(event) {
       throw new AppError(ERRORS.EMPTY_DOCUMENT.code, ERRORS.EMPTY_DOCUMENT.message, 422);
     }
 
-    const embeddings = await generateEmbeddings(
-      chunks.map((chunk) => chunk.content),
-      { taskType: 'RETRIEVAL_DOCUMENT' }
-    );
+    let embeddings;
+    try {
+      embeddings = await generateEmbeddings(
+        chunks.map((chunk) => chunk.content),
+        { taskType: 'RETRIEVAL_DOCUMENT' }
+      );
+    } catch (error) {
+      await supabase.from('documents').delete().eq('id', document.id);
+      if (error instanceof AppError) throw error;
+      throw new AppError(
+        'EMBEDDING',
+        error.message || 'We could not embed that document. Please try again.',
+        502
+      );
+    }
 
     const rows = chunks.map((chunk, index) => ({
       course_id: chunk.course_id,
@@ -102,7 +123,7 @@ export async function handler(event) {
       page_number: chunk.page_number,
       slide_number: chunk.slide_number,
       chunk_index: chunk.chunk_index,
-      embedding: embeddings[index],
+      embedding: `[${embeddings[index].join(',')}]`,
     }));
 
     const { error: chunkError } = await supabase.from('document_chunks').insert(rows);

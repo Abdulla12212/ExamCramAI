@@ -33,6 +33,15 @@ export function parseJsonBody(event) {
   }
 }
 
+function publicErrorMessage(error) {
+  const message = String(error?.message || '').trim();
+  if (!message) return 'Something went wrong. Please try again.';
+  if (/api[_-]?key|service[_-]?role|bearer\s+[a-z0-9]|password=/i.test(message)) {
+    return 'Something went wrong. Please try again.';
+  }
+  return message;
+}
+
 export function errorResponse(error) {
   if (isQuotaError(error)) {
     return json(429, {
@@ -62,7 +71,7 @@ export function errorResponse(error) {
   return json(500, {
     success: false,
     code: 'UNKNOWN',
-    error: 'Something went wrong. Please try again.',
+    error: publicErrorMessage(error),
   });
 }
 

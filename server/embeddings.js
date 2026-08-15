@@ -20,12 +20,34 @@ function embeddingConfig() {
 
 function readValues(item, dimensions) {
   const values = item?.values || item?.embedding?.values;
-  if (!Array.isArray(values) || values.length !== dimensions) {
-    throw new Error(
-      `Embedding dimension mismatch: expected ${dimensions}, received ${values?.length || 0}.`
+  if (!Array.isArray(values) || values.length === 0) {
+    throw new AppError('EMBEDDING', 'Embedding provider returned an empty vector.', 502);
+  }
+  const sliced = values.length > dimensions ? values.slice(0, dimensions) : values;
+  if (sliced.length !== dimensions) {
+    throw new AppError(
+      'EMBEDDING',
+      `Embedding dimension mismatch: expected ${dimensions}, received ${values.length}. Check EMBEDDING_DIMENSIONS matches supabase/schema.sql.`,
+      500
     );
   }
-  return l2Normalize(values);
+  return l2Normalize(sliced);
+}
+
+function throwEmbeddingError(response, payload) {
+  const message = payload?.error?.message || `Embedding request failed (${response.status})`;
+  const error = new Error(message);
+  error.status = response.status;
+  error.details = payload;
+  if (isQuotaError(error)) throw quotaError(error);
+  if (response.status === 400 || response.status === 401 || response.status === 403) {
+    throw new AppError(
+      'EMBEDDING',
+      'The embedding API rejected the request. Check GEMINI_API_KEY and EMBEDDING_MODEL.',
+      502
+    );
+  }
+  throw new AppError('EMBEDDING', message, 502);
 }
 
 async function geminiEmbedOne(text, taskType) {
@@ -42,13 +64,7 @@ async function geminiEmbedOne(text, taskType) {
     }),
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(payload?.error?.message || `Embedding request failed (${response.status})`);
-    error.status = response.status;
-    error.details = payload;
-    if (isQuotaError(error)) throw quotaError(error);
-    throw error;
-  }
+  if (!response.ok) throwEmbeddingError(response, payload);
   return readValues(payload.embedding || payload, dimensions);
 }
 
@@ -75,23 +91,21 @@ async function geminiEmbedBatch(texts, taskType) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     const message = payload?.error?.message || '';
-    if (/batchEmbedContents|not found|invalid/i.test(message) || response.status === 404) {
+    const batchMissing =
+      response.status === 404 || /batchEmbedContents.*(not found|not supported)/i.test(message);
+    if (batchMissing && texts.length <= 4) {
       const results = [];
       for (const text of texts) {
         results.push(await geminiEmbedOne(text, taskType));
       }
       return results;
     }
-    const error = new Error(message || `Embedding request failed (${response.status})`);
-    error.status = response.status;
-    error.details = payload;
-    if (isQuotaError(error)) throw quotaError(error);
-    throw error;
+    throwEmbeddingError(response, payload);
   }
 
   const embeddings = payload?.embeddings;
   if (!Array.isArray(embeddings) || embeddings.length !== texts.length) {
-    throw new Error('Embedding provider returned an unexpected response.');
+    throw new AppError('EMBEDDING', 'Embedding provider returned an unexpected response.', 502);
   }
 
   return embeddings.map((item) => readValues(item, dimensions));

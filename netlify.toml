@@ -12,9 +12,6 @@
   node_bundler = "esbuild"
   directory = "netlify/functions"
 
-[functions.ingest]
-  external_node_modules = ["pdfjs-dist"]
-
 [dev]
   command = "npm run dev"
   targetPort = 5173

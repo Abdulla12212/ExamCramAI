@@ -1,38 +1,6 @@
-import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { extractText, getDocumentProxy } from 'unpdf';
 import JSZip from 'jszip';
 import { AppError, ERRORS } from './errors.js';
-
-function pdfjsRequire() {
-  const bases = [];
-  if (typeof __filename === 'string' && __filename) bases.push(__filename);
-  bases.push(join(process.cwd(), 'package.json'));
-
-  for (const base of bases) {
-    try {
-      const req = createRequire(base);
-      req.resolve('pdfjs-dist/package.json');
-      return req;
-    } catch {
-      // Netlify CJS bundles have no import.meta.url; try the next base.
-    }
-  }
-
-  throw new AppError(
-    'CONFIG',
-    'PDF parser could not load pdfjs-dist. Check the ingest function bundle.',
-    500
-  );
-}
-
-const require = pdfjsRequire();
-const pdfjsRoot = dirname(require.resolve('pdfjs-dist/package.json'));
-pdfjs.GlobalWorkerOptions.workerSrc = pathToFileURL(
-  require.resolve('pdfjs-dist/legacy/build/pdf.worker.mjs')
-).href;
-const CMAP_URL = `${pathToFileURL(join(pdfjsRoot, 'cmaps')).href}/`;
 
 const MIN_PAGE_CHARS = 20;
 const MIN_DOCUMENT_CHARS = 40;
@@ -57,6 +25,11 @@ function decodeXmlEntities(value) {
     .replace(/&apos;/g, "'");
 }
 
+function toUint8Array(buffer) {
+  if (buffer instanceof Uint8Array && !Buffer.isBuffer(buffer)) return buffer;
+  return new Uint8Array(buffer);
+}
+
 function detectFileType(filename, buffer) {
   const name = String(filename || '').toLowerCase();
   const bytes = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
@@ -76,43 +49,38 @@ function detectFileType(filename, buffer) {
 }
 
 async function parsePdf(buffer, filename) {
-  const bytes = buffer instanceof Uint8Array && !Buffer.isBuffer(buffer)
-    ? buffer
-    : new Uint8Array(buffer);
-  const loadingTask = pdfjs.getDocument({
-    data: bytes,
-    disableFontFace: true,
-    isEvalSupported: false,
-    useSystemFonts: true,
-    disableAutoFetch: true,
-    disableStream: true,
-    verbosity: 0,
-    cMapUrl: CMAP_URL,
-    cMapPacked: true,
-  });
-  const pdf = await loadingTask.promise;
-  const pages = [];
-
-  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-    const page = await pdf.getPage(pageNumber);
-    const content = await page.getTextContent();
-    const text = normalizeWhitespace(
-      content.items
-        .map((item) => (item && typeof item.str === 'string' ? item.str : ''))
-        .join(' ')
-    );
-    pages.push({
-      document_name: filename,
-      page_number: pageNumber,
-      slide_number: null,
-      text,
+  const data = toUint8Array(buffer);
+  let pdf;
+  try {
+    pdf = await getDocumentProxy(data, {
+      isEvalSupported: false,
+      useSystemFonts: true,
+      disableFontFace: true,
+      disableAutoFetch: true,
+      disableStream: true,
+      verbosity: 0,
     });
+  } catch (error) {
+    throw new AppError(
+      'PARSE_PDF',
+      `We couldn't read that PDF (${error.message || 'parse error'}). Try exporting it again as a text-based PDF.`,
+      422
+    );
   }
+
+  const extracted = await extractText(pdf, { mergePages: false });
+  const pageTexts = Array.isArray(extracted.text) ? extracted.text : [extracted.text];
+  const pages = pageTexts.map((text, index) => ({
+    document_name: filename,
+    page_number: index + 1,
+    slide_number: null,
+    text: normalizeWhitespace(text),
+  }));
 
   const totalChars = pages.reduce((sum, page) => sum + page.text.length, 0);
   const textfulPages = pages.filter((page) => page.text.length >= MIN_PAGE_CHARS).length;
 
-  if (pdf.numPages > 0 && (totalChars < MIN_DOCUMENT_CHARS || textfulPages === 0)) {
+  if (pages.length > 0 && (totalChars < MIN_DOCUMENT_CHARS || textfulPages === 0)) {
     throw new AppError(
       ERRORS.SCANNED_PDF.code,
       "This PDF appears to be scanned/image-based. OCR is not supported in the MVP.\nWe couldn't extract text from this PDF. It may be image-based. OCR will be added later.",
@@ -122,7 +90,7 @@ async function parsePdf(buffer, filename) {
 
   return {
     fileType: 'pdf',
-    pages: pdf.numPages,
+    pages: extracted.totalPages || pages.length,
     slides: 0,
     units: pages,
   };
